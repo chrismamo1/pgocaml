@@ -185,7 +185,7 @@ let const_string ~loc str =
     pexp_loc = loc;
     pexp_attributes = []; }
 
-let parse_flags _config flags loc =
+let parse_flags _config flags =
   let f_execute = ref false in
   let f_nullable_results = ref false in
   let host = ref None in
@@ -199,41 +199,41 @@ let parse_flags _config flags loc =
   let load_custom_from = ref None in
   List.iter (
     function
-    | "execute" -> f_execute := true
-    | "nullable-results" -> f_nullable_results := true
-    | "show" -> show := Some "show"
-    | str when String.starts_with str "host=" ->
+    | "execute", _ -> f_execute := true
+    | "nullable-results", _ -> f_nullable_results := true
+    | "show", _ -> show := Some "show"
+    | str, _ when String.starts_with str "host=" ->
         let host' = String.sub str 5 (String.length str - 5) in
         host := Some host'
-    | str when String.starts_with str "port=" ->
+    | str, _ when String.starts_with str "port=" ->
         let port' = int_of_string (String.sub str 5 (String.length str - 5)) in
         port := Some port'
-    | str when String.starts_with str "user=" ->
+    | str, _ when String.starts_with str "user=" ->
         let user' = String.sub str 5 (String.length str - 5) in
         user := Some user'
-    | str when String.starts_with str "password=" ->
+    | str, _ when String.starts_with str "password=" ->
         let password' = String.sub str 9 (String.length str - 9) in
         password := Some password'
-    | str when String.starts_with str "database=" ->
+    | str, _ when String.starts_with str "database=" ->
         let database' = String.sub str 9 (String.length str - 9) in
         database := Some database'
-    | str when String.starts_with str "unix_domain_socket_dir=" ->
+    | str, _ when String.starts_with str "unix_domain_socket_dir=" ->
         let socket = String.sub str 23 (String.length str - 23) in
         unix_domain_socket_dir := Some socket
-    | str when String.starts_with str "comment_src_loc=" ->
+    | str, loc when String.starts_with str "comment_src_loc=" ->
         let comment_src_loc' = String.sub str 19 (String.length str - 19) in
         begin match comment_src_loc' with
         | "yes" | "1" | "on" -> comment_src_loc := true
         | "no" | "0" | "off" -> comment_src_loc := false
         | _ -> loc_raise loc (Failure "Unrecognized value for option 'comment_src_loc'")
         end
-    | str when String.starts_with str "show=" ->
+    | str, _ when String.starts_with str "show=" ->
         let shownam = String.sub str 5 (String.length str - 5) in
         show := Some shownam
-    | str when String.starts_with str "load_custom_from=" ->
+    | str, _ when String.starts_with str "load_custom_from=" ->
         let txt = String.sub str 17 (String.length str - 17) in
         load_custom_from := Some ((Unix.getcwd ()) ^ "/" ^ txt)
-    | str ->
+    | str, loc ->
       loc_raise loc (
         Failure ("Unknown flag: " ^ str)
       )
@@ -310,9 +310,9 @@ let mk_listpat ~loc results =
     (range 0 (List.length results))
     ([%pat? []][@metaloc loc])
 
-let pgsql_expand ~genobject ?(flags = []) ~config loc dbh query =
+let pgsql_expand ~genobject ?(flags = []) ~config dbh (query, loc) =
   let open Rresult in
-  let (key, f_execute, f_nullable_results, comment_src_loc, show, load_custom_from) = parse_flags config flags loc in
+  let (key, f_execute, f_nullable_results, comment_src_loc, show, load_custom_from) = parse_flags config flags in
   let query =
     if comment_src_loc
     then
@@ -676,7 +676,7 @@ let expand_sql ~genobject ~config loc dbh extras =
        match List.rev extras with
        | [] -> assert false
        | query :: flags -> query, flags in
-     try pgsql_expand ~config ~genobject ~flags loc dbh query
+     try pgsql_expand ~config ~genobject ~flags dbh query
      with
      | Failure s -> Error(s, loc)
      | PGOCaml.Error s -> Error(s, loc)
@@ -690,12 +690,12 @@ let list_of_string_args mapper args =
   let maybe_strs =
     List.map
       (function
-        | (Nolabel, {pexp_desc = Pexp_constant (Pconst_string (str, None)); _})
-          -> Some str
+        | (Nolabel, {pexp_desc = Pexp_constant (Pconst_string (str, None)); pexp_loc; _})
+          -> Some (str, pexp_loc)
         | (_, other) ->
           match mapper other with
-          | {pexp_desc = Pexp_constant (Pconst_string (str, None)); _}
-            -> Some str
+          | {pexp_desc = Pexp_constant (Pconst_string (str, None)); pexp_loc; _}
+            -> Some (str, pexp_loc)
           | _ -> None
       )
       args
@@ -719,9 +719,10 @@ let pgocaml_rewriter config _cookies =
       match expr with
       | { pexp_desc =
             Pexp_extension (
-              { txt ; loc }
+              { txt; _ }
             , PStr [{ pstr_desc = Pstr_eval ({pexp_desc = Pexp_apply (dbh, args); pexp_loc = qloc; _}, _); _}]
             )
+        ; pexp_loc = loc
         ; _
         } when String.starts_with txt "pgsql" ->
         let open Rresult in
